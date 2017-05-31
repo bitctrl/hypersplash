@@ -92,10 +92,17 @@ function parseModulesConf( modulesConf ) {
     // build initial map with 'wants'-references 
     for ( var moduleName in modulesConf ) {
         var moduleConf = modulesConf[ moduleName ];
+        if ( moduleConf[ 0 ] instanceof Array ) {
+            var wants = moduleConf[ 0 ];
+            var components = moduleConf[ 1 ];
+        } else {
+            var wants = [];
+            var components = moduleConf[ 0 ];
+        }
         toLoadMap[ moduleName ] = {
             name: moduleName,
-            components: moduleConf[ 1 ],
-            wants: moduleConf[ 0 ],
+            components: components,
+            wants: wants,
             wantedBy: {}
         };
     }
@@ -107,6 +114,9 @@ function parseModulesConf( modulesConf ) {
             var componentsByType = module.components[ componentType ];
             if ( typeof componentsByType === 'string' ) {
                 module.components[ componentType ] = componentsByType = [ componentsByType ];
+            } else if ( componentsByType.length === 0 ) {
+                delete module.components[ componentType ];
+                continue;
             }
             componentsCount += componentsByType.length;
         }
@@ -152,6 +162,9 @@ function loadComponent( moduleName, componentType, componentSource ) {
             document.documentElement.classList.remove( cssClassName );
             document.body.classList.remove( cssClassName );
         });
+        progressEventName && window.dispatchEvent( new CustomEvent( progressEventName, { detail: {
+            type: 'complete',
+        }}));
     }
 
     function onModuleLoaded() {
@@ -172,6 +185,10 @@ function loadComponent( moduleName, componentType, componentSource ) {
             } else if ( 0 === modulesToLoadCount ) {
                 nextTick( onComplete );
             }
+            progressEventName && window.dispatchEvent( new CustomEvent( progressEventName, { detail: {
+                type: 'module',
+                moduleName: moduleName
+            }}));
         }
     }
 
@@ -182,6 +199,7 @@ function loadComponent( moduleName, componentType, componentSource ) {
             nextTick( onModuleLoaded );
         }
         progressEventName && window.dispatchEvent( new CustomEvent( progressEventName, { detail: {
+            type: 'component',
             rate: rate,
             moduleName: moduleName,
             componentType: componentType,
