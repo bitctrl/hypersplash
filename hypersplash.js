@@ -54,6 +54,16 @@ var cssClassName = splashScript.dataset.cssClassName;
 var errorEventName = splashScript.dataset.errorEventName;
 var progressEventName = splashScript.dataset.progressEventName;
 
+var debugMode = false;
+
+// callback to modify URLs
+var urlReplacer = splashScript.dataset.urlReplacer;
+if ( urlReplacer ) {
+    urlReplacer = Function( 'DEBUG', 'url', 'module', 'type', urlReplacer );
+} else {
+    urlReplacer = function( DEBUG, url ) { return url; };
+}
+
 // add the css class name to <head> immediately (before initial rendering)
 cssClassName && document.documentElement.classList.add( cssClassName );
 
@@ -64,6 +74,7 @@ addEventListener( 'load', function(){
     var modulesConfUrl = splashScript.dataset.modulesDef;
     if ( splashScript.dataset.debugRegexp && splashScript.dataset.debugModulesDef ) {
         if ( new RegExp( splashScript.dataset.debugRegexp ).test( location.toString() ) ) {
+            debugMode = true;
             modulesConfUrl = splashScript.dataset.debugModulesDef;
         }
     }
@@ -74,9 +85,7 @@ addEventListener( 'load', function(){
 function loadModulesConf( modulesConfUrl ) {
     // TODO: handle error
     var req = new XMLHttpRequest();
-    // TODO: think about caching
-    modulesConfUrl += '?' + Date.now().valueOf()
-    req.open( 'GET', modulesConfUrl, true );
+    req.open( 'GET', urlReplacer( debugMode, modulesConfUrl ), true );
     req.overrideMimeType( 'application/json' );
     req.onreadystatechange = function () {
         if ( this.readyState != 4 ) {
@@ -156,6 +165,7 @@ function loadModule( moduleName ) {
 function loadComponent( moduleName, componentType, componentSource ) {
     if ( failed ) return;
     var module = toLoadMap[ moduleName ];
+    componentSource = urlReplacer( debugMode, componentSource, moduleName, componentType );
 
     function onComplete() {
         cssClassName && nextTick( function() {
@@ -232,7 +242,6 @@ function loadComponent( moduleName, componentType, componentSource ) {
             link.href = componentSource;
             link.addEventListener( 'load', function( event ) {
                 // handle error in ie and edge
-                // debugger;
                 try {
                     event.target.sheet.cssText;
                     onComponentLoaded.call( link, event );
