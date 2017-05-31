@@ -34,84 +34,117 @@
 // WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
+// TODO: add counter for loaded and remaining components to detect disruption
+//       in module dependencies
+
 function nextTick( fn ) {
     setTimeout( fn, 0 );
 }
 
-var bootScript = [].slice.call( document.getElementsByTagName( 'script' ) ).pop();
+var splashScript = [].slice.call( document.getElementsByTagName( 'script' ) ).pop();
 var toLoadMap = {};
-var score = 0;
 
-var cssClassName = bootScript.dataset.cssClassName;
-var errorEventName = bootScript.dataset.errorEventName;
-var progressEventName = bootScript.dataset.progressEventName;
+var componentsCount = 0;
+var componentsLoadedCount = 0;
+var modulesCount = 0;
+var modulesInQueueCount = 0;
+var failed = false;
+
+var cssClassName = splashScript.dataset.cssClassName;
+var errorEventName = splashScript.dataset.errorEventName;
+var progressEventName = splashScript.dataset.progressEventName;
+
+// add the css class name to <head> immediately (before initial rendering)
 cssClassName && document.documentElement.classList.add( cssClassName );
 
 addEventListener( 'load', function(){
+    // add the css class name to <body> after loading (after initial rendering)
     cssClassName && document.body.classList.add( cssClassName );
 
-    var modulesDefUrl = bootScript.dataset.modulesDef;
-    if ( bootScript.dataset.debugRegexp && bootScript.dataset.debugModulesDef ) {
-        if ( new RegExp( bootScript.dataset.debugRegexp ).test( location.toString() ) ) {
-            modulesDefUrl = bootScript.dataset.debugModulesDef;
+    var modulesConfUrl = splashScript.dataset.modulesDef;
+    if ( splashScript.dataset.debugRegexp && splashScript.dataset.debugModulesDef ) {
+        if ( new RegExp( splashScript.dataset.debugRegexp ).test( location.toString() ) ) {
+            modulesConfUrl = splashScript.dataset.debugModulesDef;
         }
     }
 
-    loadModuleDef( modulesDefUrl );
+    loadModulesConf( modulesConfUrl );
 });
 
-function loadModuleDef( modulesDefUrl ) {
+function loadModulesConf( modulesConfUrl ) {
     // TODO: handle error
     var req = new XMLHttpRequest();
     // TODO: think about caching
-    modulesDefUrl += '?' + Date.now().valueOf()
-    req.open( 'GET', modulesDefUrl, true );
+    modulesConfUrl += '?' + Date.now().valueOf()
+    req.open( 'GET', modulesConfUrl, true );
     req.overrideMimeType( 'application/json' );
     req.onreadystatechange = function () {
         if ( this.readyState != 4 ) {
             return;
         }
         var modulesDef = JSON.parse( this.responseText );
-        nextTick( loadModules.bind( null, modulesDef ) );
+        nextTick( parseModulesConf.bind( null, modulesDef ) );
     };
     req.send();
 }
 
-function loadModules( modulesDef ) {
-    for ( var moduleName in modulesDef ) {
-        var moduleDef = modulesDef[ moduleName ];
-        score += moduleDef[ 1 ],
+function parseModulesConf( modulesConf ) {
+    // build initial map with 'wants'-references 
+    for ( var moduleName in modulesConf ) {
+        var moduleConf = modulesConf[ moduleName ];
         toLoadMap[ moduleName ] = {
             name: moduleName,
-            components: moduleDef[ 1 ],
-            wants: moduleDef[ 0 ],
+            components: moduleConf[ 1 ],
+            wants: moduleConf[ 0 ],
             wantedBy: {}
         };
     }
+    // make reverse 'wanted-by'-references
     for ( var moduleName in toLoadMap ) {
         var module = toLoadMap[ moduleName ];
+        ++modulesCount;
+        for ( var componentType in module.components ) {
+            var componentsByType = module.components[ componentType ];
+            if ( typeof componentsByType === 'string' ) {
+                module.components[ componentType ] = componentsByType = [ componentsByType ];
+            }
+            componentsCount += componentsByType.length;
+        }
         if ( module.wants.length === 0 ) {
+            ++modulesInQueueCount;
             nextTick( loadModule.bind( null, moduleName ) );
         } else for ( var ii = module.wants.length; ii; ) {
-            toLoadMap[ module.wants[ --ii ] ].wantedBy[ moduleName ] = true;
+            var prerequisiteName = module.wants[ --ii ];
+            if ( toLoadMap.hasOwnProperty( prerequisiteName ) ) {
+                toLoadMap[ prerequisiteName ].wantedBy[ moduleName ] = true;
+            } else {
+                dispatchError({ message: `Unresolved dependency ${prerequisiteName} for module ${moduleName}.` });
+            }
         }
+    }
+    if ( !modulesInQueueCount ) {
+        dispatchError({ message: `No module w/o dependencies found.` });
     }
 }
 
+function dispatchError( detail ) {
+    failed = true;
+    errorEventName && window.dispatchEvent( new CustomEvent( errorEventName, { detail: detail }));
+}
+
 function loadModule( moduleName ) {
+    if ( failed ) return;
     var module = toLoadMap[ moduleName ];
     for ( var componentType in module.components ) {
-        var components = module.components[ componentType ];
-        if ( typeof components === 'string' ) {
-            module.components[ componentType ] = components = [ components ];
-        }
-        components.forEach( function( componentSource ){
+        var componentsByType = module.components[ componentType ];
+        componentsByType.forEach( function( componentSource ){
             nextTick( loadComponent.bind( null, moduleName, componentType, componentSource ) );
         });
     }
 }
 
 function loadComponent( moduleName, componentType, componentSource ) {
+    if ( failed ) return;
     var module = toLoadMap[ moduleName ];
 
     function onComplete() {
@@ -128,22 +161,28 @@ function loadComponent( moduleName, componentType, componentSource ) {
                 var dependent = toLoadMap[ dependentName ];
                 dependent.wants.splice( dependent.wants.indexOf( moduleName ), 1 );
                 if ( dependent.wants.length === 0 ) {
+                    ++modulesInQueueCount;
                     nextTick( loadModule.bind( null, dependentName ) );
                 }
             }
             delete toLoadMap[ moduleName ];
-            if ( Object.getOwnPropertyNames( toLoadMap ).length === 0 ) {
+            var modulesToLoadCount = Object.getOwnPropertyNames( toLoadMap ).length;
+            if ( 0 === --modulesInQueueCount && 0 !== modulesToLoadCount ) {
+                dispatchError({ message: 'Circular reference in dependencies.' });
+            } else if ( 0 === modulesToLoadCount ) {
                 nextTick( onComplete );
             }
         }
     }
 
     function onComponentLoaded( event ) {
+        var rate = 1.0 * ++componentsLoadedCount / componentsCount;
         module.components[ componentType ].splice( module.components[ componentType ].indexOf( componentSource ), 1 );
         if ( module.components[ componentType ].length === 0 ) {
             nextTick( onModuleLoaded );
         }
-        progressEventName && window.dispatchEvent( new CustomEvent( progressEventName, { 'detail': {
+        progressEventName && window.dispatchEvent( new CustomEvent( progressEventName, { detail: {
+            rate: rate,
             moduleName: moduleName,
             componentType: componentType,
             componentSource: componentSource,
@@ -152,12 +191,13 @@ function loadComponent( moduleName, componentType, componentSource ) {
     }
 
     function onError( event ) {
-        errorEventName && window.dispatchEvent( new CustomEvent( errorEventName, { 'detail': {
+        dispatchError({
+            message: `Cannot load component "${componentSource}" of module "${moduleName}"`,
             moduleName: moduleName,
             componentType: componentType,
             componentSource: componentSource,
             event: event
-        }}));
+        });
     }
 
     switch( componentType ) {
@@ -177,9 +217,9 @@ function loadComponent( moduleName, componentType, componentSource ) {
                 // debugger;
                 try {
                     event.target.sheet.cssText;
-                    onComponentLoaded( link, event );
+                    onComponentLoaded.call( link, event );
                 } catch ( e ) {
-                    onError( link, event );
+                    onError.call( link, event );
                 }
              });
             link.addEventListener( 'error', onError );
